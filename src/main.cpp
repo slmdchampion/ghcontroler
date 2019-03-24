@@ -5,27 +5,27 @@
 
 //  I2C device address is 0 1 0 0   A2 A1 A0
 #define EXP0_ADDRESS (0x4 << 3 | 0x0)
-#define EXP_INPUT0 0
-#define EXP_INPUT1 1
-#define EXP_OUTPUT0 2
-#define EXP_OUTPUT1 3
-#define EXP_CONFIG0 6
-#define EXP_CONFIG1 7
+#define EXP_INPUT0 0x12
+#define EXP_INPUT1 0x13
+#define EXP_OUTPUT0 0x12
+#define EXP_OUTPUT1 0x13
+#define EXP_CONFIG0  0
+#define EXP_CONFIG1 1
 
 // Wifi: SSID and password
 const char* WIFI_SSID = "robertjoseph";
 const char* WIFI_PASSWORD = "allmylove";
 
 // MQTT: ID, server IP, port, username and password
-const PROGMEM char* MQTT_CLIENT_ID = "office_light1";
+const PROGMEM char* MQTT_CLIENT_ID = "ghcontroller";
 const PROGMEM char* MQTT_SERVER_IP = "10.0.0.30";
 const PROGMEM uint16_t MQTT_SERVER_PORT = 1883;
-const PROGMEM char* MQTT_USER = "homeassistant";
+const PROGMEM char* MQTT_USER = "hassmqtt";
 const PROGMEM char* MQTT_PASSWORD = "home23";
 
 // MQTT: topics
-const char* MQTT_RELAY_STATE_TOPIC = "gardenplot/greenhouse/controller/status";
-const char* MQTT_RELAY_COMMAND_TOPIC = "gardenplot/greenhouse/controller/valve";
+const char* MQTT_RELAY_STATE_TOPIC = "ghcontroller/status";
+const char* MQTT_RELAY_COMMAND_TOPIC = "ghcontroller/valve";
 
 // payloads by default (on/off)
 const char* RELAY_ON = "ON";
@@ -53,26 +53,31 @@ void Write_Gpio(uint8_t relay_no, int state) {
     for (uint8_t i = 0; i < 8; i++) {
         Serial.print(m_relay_state[i]);
         if (m_relay_state[i]) {
-           bitSet(port0_byte,i);
+           bitClear(port0_byte,i);
         } else {
-            bitClear(port0_byte,i);
+            bitSet(port0_byte,i);
         }
     }
     for (uint8_t i = 8; i < 16; i++) {
         Serial.print(m_relay_state[i]);
         if (m_relay_state[i]) {
-            bitSet(port1_byte,i-8);
-        } else {
             bitClear(port1_byte,i-8);
+        } else {
+            bitSet(port1_byte,i-8);
         }
     }
     Serial.println();
     Wire.beginTransmission(EXP0_ADDRESS);
     Wire.write(EXP_OUTPUT0);
     Wire.write(port0_byte);
+    Wire.endTransmission();
     Serial.print("port 0 byte: ");
     Serial.println(port0_byte, BIN);
+    Wire.beginTransmission(EXP0_ADDRESS);
+    Wire.write(EXP_OUTPUT1);
     Wire.write(port1_byte);
+    Wire.endTransmission();
+    
     Serial.print("port 1 byte: ");
     Serial.println(port1_byte, BIN);
     Wire.endTransmission();
@@ -88,8 +93,12 @@ void publishRelayState(uint8_t relay_no) {
 
   if (m_relay_state[relay_no]) {
     client.publish(buffer, RELAY_ON, true);
+    Serial.print(buffer);
+    Serial.println("publish on...");
   } else {
     client.publish(buffer, RELAY_OFF, true);
+    Serial.print(buffer);
+    Serial.println("publish off...");
   }
 }
 
@@ -120,7 +129,7 @@ void callback(char* p_topic, byte* p_payload, unsigned int p_length) {
   // handle message topic
   for (uint8_t i=0; i < 16; i++) {
       
-    if (String(MQTT_RELAY_COMMAND_TOPIC + String(i)).equals(p_topic)) {
+    if (String(MQTT_RELAY_COMMAND_TOPIC + String(i + 1)).equals(p_topic)) {
         // test if the payload is equal to "ON" or "OFF"
         if (payload.equals(String(RELAY_ON))) {
             if (m_relay_state[i] != true) {
@@ -156,7 +165,7 @@ void reconnect() {
       // ... and resubscribe
       for (uint8_t i=0; i < 16; i++) {
         topic = String(MQTT_RELAY_COMMAND_TOPIC);
-        topic += String(i);
+        topic += String(i + 1);
         topic.toCharArray(buffer, 60);
         Serial.println(buffer);
         client.subscribe(buffer);
@@ -172,20 +181,27 @@ void reconnect() {
 }
 
 void setup() {
-  Wire.begin(D1,D2);
+  Wire.begin();
   Wire.beginTransmission(EXP0_ADDRESS);
-  Wire.write(EXP_CONFIG0);
-  // send 1 for output 0 for input to the config registers
+  Wire.write(EXP_CONFIG0);  // send 1 for output 0 for input to the config registers
   Wire.write(0x00);  //set port 0 to output
-  Wire.write(0x00);  //set port 1 to output
-  Wire.endTransmission();
-  // set all bits to off
-  Wire.beginTransmission(EXP0_ADDRESS);
-  Wire.write(EXP_OUTPUT1);
-  Wire.write(0b00000000);
-  Wire.write(0b00000000);
   Wire.endTransmission();
 
+  Wire.beginTransmission(EXP0_ADDRESS);
+  Wire.write(EXP_CONFIG1);
+  Wire.write(0x00);  //set port 1 to output
+  Wire.endTransmission();
+
+  // set all bits to off
+  Wire.beginTransmission(EXP0_ADDRESS);
+  Wire.write(EXP_OUTPUT0);
+  Wire.write(0b11111111);
+  Wire.endTransmission();
+  Wire.beginTransmission(EXP0_ADDRESS);
+  Wire.write(EXP_OUTPUT1);
+  Wire.write(0b11111111);
+  Wire.endTransmission();
+  
   // initialize serial debug and monitor
   Serial.begin(9600);
 
