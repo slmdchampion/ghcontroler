@@ -6,17 +6,30 @@
 #include <OneWire.h>
 #include <ArduinoJson.h>
 #include "Secrets.h"
+#include <ESPmDNS.h>
+#include <WiFiUdp.h>
+#include <ArduinoOTA.h>
 
 // TODO:   verify -->program start needs to be from midnight not absolute, fix relay on/off logic 
 // things to add: change any global variables, make sure can see all globals
 //  I2C device address is 0 1 0 0   A2 A1 A0
 #define EXP0_ADDRESS (0x4 << 3 | 0x0)
-#define EXP_INPUT0 0x12
-#define EXP_INPUT1 0x13
-#define EXP_OUTPUT0 0x12
-#define EXP_OUTPUT1 0x13
-#define EXP_CONFIG0 0
-#define EXP_CONFIG1 1
+#ifdef MCP23017
+  #define EXP_INPUT0 0x12
+  #define EXP_INPUT1 0x13
+  #define EXP_OUTPUT0 0x12
+  #define EXP_OUTPUT1 0x13
+  #define EXP_CONFIG0 0
+  #define EXP_CONFIG1 1
+#else
+  //pca9555
+  #define EXP_INPUT0 0
+  #define EXP_INPUT1 1
+  #define EXP_OUTPUT0 2
+  #define EXP_OUTPUT1 3
+  #define EXP_CONFIG0 6
+  #define EXP_CONFIG1 7
+#endif
 
 #ifdef BOARDESP32
   #include "Wifi.h"
@@ -181,15 +194,15 @@ void Write_Gpio(uint8_t relay_no, int state) {
     Wire.beginTransmission(EXP0_ADDRESS);
     Wire.write(EXP_OUTPUT0);
     Wire.write(port0_byte);
-    Wire.endTransmission();
-    DebugOutput("port 0 byte: " + String(port0_byte, BIN));
-    Wire.beginTransmission(EXP0_ADDRESS);
-    Wire.write(EXP_OUTPUT1);
+    #ifdef MCP23017
+      Wire.endTransmission();   
+      Wire.beginTransmission(EXP0_ADDRESS);
+      Wire.write(EXP_OUTPUT1);
+    #endif
     Wire.write(port1_byte);
-    Wire.endTransmission();    
-    DebugOutput("port 1 byte: " + String(port1_byte, BIN));
     Wire.endTransmission();
-
+    DebugOutput("port 0 byte: " + String(port0_byte, BIN));    
+    DebugOutput("port 1 byte: " + String(port1_byte, BIN));
 }
 // function called to publish the state of the relay (on/off)
 void publishRelayState(uint8_t relay_no) {
@@ -336,7 +349,7 @@ void reconnect() {
 void setup() {
   minute_count = 0;
     // initialize serial debug and monitor
-  Serial.begin(9600);
+  Serial.begin(115200);
      // set the interupt pin to input mode
   pinMode(RtcSquareWavePin, INPUT);
   //attachInterrupt(digitalPinToInterrupt(RtcSquareWavePin), InteruptServiceRoutine, FALLING);
@@ -344,26 +357,41 @@ void setup() {
 //  Wire.begin();
   Rtc.Begin();
 
-  Wire.beginTransmission(EXP0_ADDRESS);
-  Wire.write(EXP_CONFIG0);  // send 1 for output 0 for input to the config registers
-  Wire.write(0x00);  //set port 0 to output
-  Wire.endTransmission();
+  #ifdef MCP23017
+    Wire.beginTransmission(EXP0_ADDRESS);
+    Wire.write(EXP_CONFIG0);  // send 1 for output 0 for input to the config registers
+    Wire.write(0x00);  //set port 0 to output
+    Wire.endTransmission();
 
-  Wire.beginTransmission(EXP0_ADDRESS);
-  Wire.write(EXP_CONFIG1);
-  Wire.write(0x00);  //set port 1 to output
-  Wire.endTransmission();
+    Wire.beginTransmission(EXP0_ADDRESS);
+    Wire.write(EXP_CONFIG1);
+    Wire.write(0x00);  //set port 1 to output
+    Wire.endTransmission();
 
-  // set all bits to off
-  Wire.beginTransmission(EXP0_ADDRESS);
-  Wire.write(EXP_OUTPUT0);
-  Wire.write(0b11111111);
-  Wire.endTransmission();
-  Wire.beginTransmission(EXP0_ADDRESS);
-  Wire.write(EXP_OUTPUT1);
-  Wire.write(0b11111111);
-  Wire.endTransmission();
-  
+    // set all bits to off
+    Wire.beginTransmission(EXP0_ADDRESS);
+    Wire.write(EXP_OUTPUT0);
+    Wire.write(0b11111111);
+    Wire.endTransmission();
+    Wire.beginTransmission(EXP0_ADDRESS);
+    Wire.write(EXP_OUTPUT1);
+    Wire.write(0b11111111);
+    Wire.endTransmission();
+  #else
+  //pca95555
+    Wire.beginTransmission(EXP0_ADDRESS);
+    Wire.write(EXP_CONFIG0);
+    // send 1 for output 0 for input to the config registers
+    Wire.write(0x00);  //set port 0 to output
+    Wire.write(0x00);  //set port 1 to output
+    Wire.endTransmission();
+    // set all bits to off
+    Wire.beginTransmission(EXP0_ADDRESS);
+    Wire.write(EXP_OUTPUT1);
+    Wire.write(0b00000000);
+    Wire.write(0b00000000);
+    Wire.endTransmission();
+  #endif
   // init the WiFi connection
   Serial.println();
   Serial.println();
@@ -441,6 +469,32 @@ void setup() {
   // init the MQTT connection
   client.setServer(MQTT_SERVER_IP, MQTT_SERVER_PORT);
   client.setCallback(callback);
+  ArduinoOTA.onStart([]() {
+      String type;
+      if (ArduinoOTA.getCommand() == U_FLASH)
+        type = "sketch";
+      else // U_SPIFFS
+        type = "filesystem";
+
+      // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
+      Serial.println("Start updating " + type);
+    })
+    .onEnd([]() {
+      Serial.println("\nEnd");
+    })
+    .onProgress([](unsigned int progress, unsigned int total) {
+      Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+    })
+    .onError([](ota_error_t error) {
+      Serial.printf("Error[%u]: ", error);
+      if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
+      else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
+      else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
+      else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
+      else if (error == OTA_END_ERROR) Serial.println("End Failed");
+    });
+
+  ArduinoOTA.begin();
 }
 
 void loop() {
@@ -450,6 +504,7 @@ void loop() {
   bool relay_turn_on[16] = {false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false};
   WiFiClient throwaway_client = telnet_server.available();
 
+  ArduinoOTA.handle();
   if (throwaway_client) {
     connected_flag = true;
     telnet_client = throwaway_client;
